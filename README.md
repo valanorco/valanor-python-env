@@ -1,4 +1,4 @@
-# Fast Python Environment Setup with uv
+# Valanor Python Env — Fast Data/ML Setup with uv
 
 This repository documents **how we bootstrap Python environments at [Valanor](https://valanor.co)**.  
 It uses [uv](https://astral.sh/uv) for ultra-fast installs and a clear tiered setup.
