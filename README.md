@@ -88,11 +88,28 @@ Every run generates an `ENVIRONMENT.md` like:
 
 ---
 
-## 🏷️ Valanor Standard
+## ⚙️ Using the Makefile
 
-_This is the way we do it at Valanor._
+This repository also includes a **Makefile** to simplify service management.  
+It is a **starting point** — you can customize it based on your needs (change ports, add/remove services, or integrate Docker).
+
+### Available commands
+
+```bash
+make setup        # run init_env.sh and create environment
+make api          # start FastAPI demo app
+make jupyter      # launch JupyterLab
+make mlflow       # run MLflow UI
+
+make start-all    # start API, Jupyter, MLflow in background
+make logs         # tail logs from all services
+make stop-all     # stop background services
+```
+
+Logs are stored in `./logs` and process IDs in `./run`.
 
 ---
+
 
 ## 📜 License
 
