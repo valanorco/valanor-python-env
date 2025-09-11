@@ -176,7 +176,26 @@ EOF
 fi
 
 echo "📥 Installing ${TIER} stack with uv ..."
-uv pip install --only-binary=:all: -r "$REQ_FILE"
+
+if [[ "$TIER" == "full" ]]; then
+  # 1) Install everything EXCEPT pyspark using wheels-only
+  awk 'tolower($0) !~ /^pyspark/ {print}' "$REQ_FILE" > .req_nospark.txt
+  uv pip install --only-binary=:all: -r .req_nospark.txt
+  rm -f .req_nospark.txt
+
+  # 2) Install pyspark from sdist (pure Python; wheels may be missing on Py 3.13)
+  echo "📥 Installing pyspark from sdist ..."
+  uv pip install --no-binary=pyspark "pyspark==4.0.0"
+else
+  uv pip install --only-binary=:all: -r "$REQ_FILE"
+fi
+
+# -------------------------
+# JAVA check (for PySpark)
+# -------------------------
+if [[ "$TIER" == "full" ]] && ! command -v java >/dev/null 2>&1; then
+  echo "⚠️  Java not found; PySpark may fail at runtime. Try: sudo apt install -y openjdk-17-jre"
+fi
 
 # -------------------------
 # CUDA detection (optional GPU frameworks)
