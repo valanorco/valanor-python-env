@@ -159,6 +159,7 @@ uvicorn[standard]
 pydantic
 SQLAlchemy
 psycopg2-binary
+opencv-python-headless
 # Optional cloud connectors (uncomment as needed)
 # boto3
 # google-cloud-storage
