@@ -60,6 +60,16 @@ done
 
 need() { command -v "$1" >/dev/null 2>&1; }
 
+get_pkg_mgr_hint() {
+    if   need apt;    then echo "sudo apt update && sudo apt install -y"
+    elif need dnf;    then echo "sudo dnf update && sudo dnf install -y"
+    elif need yum;    then echo "sudo yum update && sudo yum install -y"
+    elif need zypper; then echo "sudo zypper update && sudo zypper install -y"
+    elif need pacman; then echo "sudo pacman update && sudo pacman -S --noconfirm"
+    else echo "sudo <YOUR_PACKAGE_MANAGER> update && sudo <YOUR_PACKAGE_MANAGER> install -y"
+    fi
+}
+
 # -------------------------
 # Pre-flight checks
 # -------------------------
@@ -70,7 +80,7 @@ if ! need uv; then
 fi
 if ! need "$PYTHON_BIN"; then
   echo "ERROR: '$PYTHON_BIN' not found."
-  echo "Hint: sudo apt update && sudo apt install -y python3 python3-venv python3-pip"
+  echo "Hint: `get_pkg_mgr_hint` python3 python3-venv python3-pip"
   exit 1
 fi
 
