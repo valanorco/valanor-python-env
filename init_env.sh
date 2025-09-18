@@ -61,13 +61,13 @@ done
 need() { command -v "$1" >/dev/null 2>&1; }
 
 get_pkg_mgr_hint() {
-    if   need apt;    then echo "sudo apt update && sudo apt install -y"
-    elif need dnf;    then echo "sudo dnf update && sudo dnf install -y"
-    elif need yum;    then echo "sudo yum update && sudo yum install -y"
-    elif need zypper; then echo "sudo zypper update && sudo zypper install -y"
-    elif need pacman; then echo "sudo pacman update && sudo pacman -S --noconfirm"
-    else echo "sudo <YOUR_PACKAGE_MANAGER> update && sudo <YOUR_PACKAGE_MANAGER> install -y"
-    fi
+  if   need apt;    then echo "sudo apt update && sudo apt install -y"
+  elif need dnf;    then echo "sudo dnf update && sudo dnf install -y"
+  elif need yum;    then echo "sudo yum update && sudo yum install -y"
+  elif need zypper; then echo "sudo zypper update && sudo zypper install -y"
+  elif need pacman; then echo "sudo pacman -Syu --noconfirm"
+  else echo "sudo <YOUR_PACKAGE_MANAGER> update && sudo <YOUR_PACKAGE_MANAGER> install -y"
+  fi
 }
 
 # -------------------------
@@ -80,7 +80,7 @@ if ! need uv; then
 fi
 if ! need "$PYTHON_BIN"; then
   echo "ERROR: '$PYTHON_BIN' not found."
-  echo "Hint: `get_pkg_mgr_hint` python3 python3-venv python3-pip"
+  echo "Hint: $(get_pkg_mgr_hint) python3 python3-venv python3-pip"
   exit 1
 fi
 
@@ -97,6 +97,32 @@ fi
 # shellcheck disable=SC1090
 source "$VENV_DIR/bin/activate"
 echo "✅ Activated: $(python -c 'import sys; print(sys.prefix)')"
+
+# Seed pip inside the venv so tools that call `python -m pip` don’t break
+uv pip install --upgrade pip setuptools wheel >/dev/null 2>&1 || true
+
+# Enforce venv usage (PEP 668 guard) and prefer venv bin
+export PATH="$VENV_DIR/bin:$PATH"
+if python - <<'PY' | grep -q '^FALSE$'; then
+import sys
+print("TRUE" if (hasattr(sys, "base_prefix") and sys.prefix != sys.base_prefix) else "FALSE")
+PY
+  echo "ERROR: Not using the virtual environment Python. Aborting to avoid PEP 668."
+  echo "Hint: source \"$VENV_DIR/bin/activate\" and retry."
+  exit 1
+fi
+
+# Wrapper: use uv pip first (fast); on error fall back to venv pip
+pip_install() {
+  set +e
+  uv pip install "$@"
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    echo "⚠️  uv pip failed or refused. Falling back to venv pip..."
+    "$VENV_DIR/bin/pip" install "$@"
+  fi
+}
 
 # -------------------------
 # Generate requirements.txt for selected tier
@@ -185,19 +211,22 @@ EOF
   esac
 fi
 
-echo "📥 Installing ${TIER} stack with uv ..."
+# -------------------------
+# Install (venv-safe) with PySpark two-phase
+# -------------------------
+echo "📥 Installing ${TIER} stack (venv-safe) ..."
 
 if [[ "$TIER" == "full" ]]; then
-  # 1) Install everything EXCEPT pyspark using wheels-only
-  awk 'tolower($0) !~ /^pyspark/ {print}' "$REQ_FILE" > .req_nospark.txt
-  uv pip install --only-binary=:all: -r .req_nospark.txt
+  # 1) Wheels-only for everything EXCEPT pyspark
+  awk 'tolower($0) !~ /^pyspark/' "$REQ_FILE" > .req_nospark.txt
+  pip_install --only-binary=:all: -r .req_nospark.txt
   rm -f .req_nospark.txt
 
-  # 2) Install pyspark from sdist (pure Python; wheels may be missing on Py 3.13)
+  # 2) pyspark from sdist (pure Python; wheels may be missing on Py 3.13)
   echo "📥 Installing pyspark from sdist ..."
-  uv pip install --no-binary=pyspark "pyspark==4.0.0"
+  pip_install --no-binary=pyspark "pyspark==4.0.0"
 else
-  uv pip install --only-binary=:all: -r "$REQ_FILE"
+  pip_install --only-binary=:all: -r "$REQ_FILE"
 fi
 
 # -------------------------
@@ -223,7 +252,8 @@ detect_cuda() {
   if need nvidia-smi; then GPU_PRESENT=1; fi
   if [[ "$GPU_PRESENT" -eq 1 ]]; then
     if need nvcc; then
-      local ver; ver="$(nvcc --version 2>/dev/null | grep -Eo 'release[[:space:]]+[0-9]+\\.[0-9]+' | awk '{print $2}' || true)"
+      # fixed regex: single escaped dot
+      local ver; ver="$(nvcc --version 2>/dev/null | grep -Eo 'release[[:space:]]+[0-9]+\.[0-9]+' | awk '{print $2}' || true)"
       case "$ver" in
         12.8*) CUDA_TAG="cu128" ;;
         12.6*) CUDA_TAG="cu126" ;;
@@ -244,20 +274,19 @@ install_torch() {
   [[ -n "$TORCH_VERSION" ]] && ver_suf="==${TORCH_VERSION}"
 
   case "$CUDA_TAG" in
-    cpu)                        uv pip install "torch${ver_suf}" --index-url https://download.pytorch.org/whl/cpu ;;
-    cu121|cu124|cu126|cu128)    uv pip install "torch${ver_suf}" --index-url "https://download.pytorch.org/whl/${CUDA_TAG}" ;;
-    *)                          uv pip install "torch${ver_suf}" --index-url https://download.pytorch.org/whl/cpu ;;
+    cpu)                        pip_install "torch${ver_suf}" --index-url https://download.pytorch.org/whl/cpu ;;
+    cu121|cu124|cu126|cu128)    pip_install "torch${ver_suf}" --index-url "https://download.pytorch.org/whl/${CUDA_TAG}" ;;
+    *)                          pip_install "torch${ver_suf}" --index-url https://download.pytorch.org/whl/cpu ;;
   esac
 
   if [[ "$TORCH_EXTRAS" == "vision" || "$TORCH_EXTRAS" == "all" ]]; then
     set +e
     echo "🧩 Trying to install torchvision ..."
     case "$CUDA_TAG" in
-      cpu)                     uv pip install torchvision --index-url https://download.pytorch.org/whl/cpu ;;
-      cu121|cu124|cu126|cu128) uv pip install torchvision --index-url "https://download.pytorch.org/whl/${CUDA_TAG}" ;;
-      *)                       uv pip install torchvision --index-url https://download.pytorch.org/whl/cpu ;;
+      cpu)                     pip_install torchvision --index-url https://download.pytorch.org/whl/cpu ;;
+      cu121|cu124|cu126|cu128) pip_install torchvision --index-url "https://download.pytorch.org/whl/${CUDA_TAG}" ;;
+      *)                       pip_install torchvision --index-url https://download.pytorch.org/whl/cpu ;;
     esac
-    if [[ $? -ne 0 ]]; then echo "⚠️  torchvision wheel not available; continuing without it."; fi
     set -e
   fi
 
@@ -265,22 +294,21 @@ install_torch() {
     set +e
     echo "🧩 Trying to install torchaudio ..."
     case "$CUDA_TAG" in
-      cpu)                     uv pip install torchaudio --index-url https://download.pytorch.org/whl/cpu ;;
-      cu121|cu124|cu126|cu128) uv pip install torchaudio --index-url "https://download.pytorch.org/whl/${CUDA_TAG}" ;;
-      *)                       uv pip install torchaudio --index-url https://download.pytorch.org/whl/cpu ;;
+      cpu)                     pip_install torchaudio --index-url https://download.pytorch.org/whl/cpu ;;
+      cu121|cu124|cu126|cu128) pip_install torchaudio --index-url "https://download.pytorch.org/whl/${CUDA_TAG}" ;;
+      *)                       pip_install torchaudio --index-url https://download.pytorch.org/whl/cpu ;;
     esac
-    if [[ $? -ne 0 ]]; then echo "⚠️  torchaudio wheel not available; continuing without it."; fi
     set -e
   fi
 }
 
-install_tf() { uv pip install "${TF_PACKAGE}"; }
+install_tf() { pip_install "${TF_PACKAGE}"; }
 install_jax() {
   if [[ "$CUDA_TAG" == "cpu" ]]; then
-    uv pip install ${JAX_VERSION:+jax==$JAX_VERSION} || uv pip install jax
+    pip_install ${JAX_VERSION:+jax==$JAX_VERSION} || pip_install jax
   else
-    uv pip install "jax[cuda12]" ${JAX_VERSION:+jaxlib==$JAX_VERSION}
-    uv pip install --upgrade jax-cuda12-plugin || true
+    pip_install "jax[cuda12]" ${JAX_VERSION:+jaxlib==$JAX_VERSION}
+    pip_install --upgrade jax-cuda12-plugin || true
   fi
 }
 
